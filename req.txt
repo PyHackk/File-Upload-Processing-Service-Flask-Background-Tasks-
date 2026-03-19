@@ -1,4 +1,4 @@
-const handleSelect = useCallback(async (item: SearchResultItem) => {
+const handleSelect = useCallback((item: SearchResultItem) => {
     setDropdownVisible(false);
     setSearchQuery('');
 
@@ -7,61 +7,204 @@ const handleSelect = useCallback(async (item: SearchResultItem) => {
         const title = (item.title || '').replace(/<[^>]*>/g, '');
         const m = item.metadata || {};
 
-        // Workbooks with url_with_repo go direct
-        if (item.doc_type === 'workbook' && m.url_with_repo) {
-            sessionStorage.setItem('dashboard_direct_url', m.url_with_repo);
-            window.location.href = `/dashboard?title=${encodeURIComponent(title)}&from=${encodeURIComponent(window.location.pathname)}`;
-            return;
-        }
-
-        // Dashboards and workbooks without url: resolve via permitted views
-        try {
-            const { authApi } = await import('@/lib/api');
-            const { getPermittedViews } = await import('@/lib/api/tableauApi');
-            const userRes = await authApi.getCurrentUser();
-            const oidcSub = (userRes as any)?.data?.oidc_sub || (userRes as any)?.oidc_sub;
-
-            if (oidcSub) {
-                const permittedData = await getPermittedViews(oidcSub);
-                if (permittedData.success && permittedData.views) {
-                    const cleanTitle = title.toLowerCase();
-                    const match = permittedData.views.find((v: any) => {
-                        const vName = (v.name || '').toLowerCase();
-                        const cvName = (v.customized_name || '').toLowerCase();
-                        const wName = (v.workbook_name || '').toLowerCase();
-                        return vName === cleanTitle
-                            || cvName === cleanTitle
-                            || wName === cleanTitle
-                            || cleanTitle.includes(vName)
-                            || vName.includes(cleanTitle);
-                    });
-
-                    if (match) {
-                        const v: any = match;
-                        const repoUrlParts = (v.repository_url || '').split('/');
-                        const viewName = repoUrlParts[repoUrlParts.length - 1] || v.name;
-                        const siteNamespace = (v.site_url_namespace || 'CIS').toLowerCase();
-                        const builtUrl = `https://tableau.cib.echonet/#/site/${siteNamespace}/views/${v.workbook_repo_url}/${viewName}?:iid=${v.index || 1}`;
-                        sessionStorage.setItem('dashboard_direct_url', builtUrl);
-                        window.location.href = `/dashboard?title=${encodeURIComponent(title)}&from=${encodeURIComponent(window.location.pathname)}`;
-                        return;
-                    }
-                }
-            }
-        } catch (e) {}
-
-        // Fallback: still navigate, let dashboard page handle it
-        if (m.url_with_repo) {
-            sessionStorage.setItem('dashboard_direct_url', m.url_with_repo);
-        }
+        // Store whatever metadata we have, dashboard page will resolve
+        sessionStorage.setItem('dashboard_pending_meta', JSON.stringify(m));
+        sessionStorage.setItem('dashboard_pending_title', title);
         window.location.href = `/dashboard?title=${encodeURIComponent(title)}&from=${encodeURIComponent(window.location.pathname)}`;
         return;
     }
 
-    // Everything else (clients, meetings, pages) still opens the modal
+    // Everything else opens the modal
     setSelectedItem(item);
 }, []);
 
 
 
 
+'use client';
+
+import { useSearchParams, useRouter } from 'next/navigation';
+import { AuthProvider } from '@/app/AuthProvider';
+import Header from '@/components/layout/header/header';
+import DashboardView from '@/components/ui/DashboardView/page';
+import '@/tailwind/components/home/home.css';
+import { useState, useEffect } from 'react';
+
+export default function DashboardPage() {
+    return (
+        <AuthProvider>
+            <DashboardContent />
+        </AuthProvider>
+    );
+}
+
+function DashboardContent() {
+    const searchParams = useSearchParams();
+    const router = useRouter();
+
+    const backTo = searchParams.get('from') || '/';
+    const title = searchParams.get('title') || 'Dashboard View';
+    const view = searchParams.get('view');
+    const iid = searchParams.get('iid') || '1';
+
+    const [tableauUrl, setTableauUrl] = useState<string | null>(null);
+    const [resolving, setResolving] = useState(true);
+
+    useEffect(() => {
+        async function resolveUrl() {
+            // 1. Check for direct URL (already resolved)
+            const directUrl = sessionStorage.getItem('dashboard_direct_url');
+            if (directUrl) {
+                const embed = directUrl.includes('?')
+                    ? `${directUrl}&:embed=y&:toolbar=no`
+                    : `${directUrl}?:embed=y&:toolbar=no`;
+                setTableauUrl(embed);
+                setResolving(false);
+                return;
+            }
+
+            // 2. Check for view param (home KPI cards)
+            if (view) {
+                setTableauUrl(`https://tableau.cib.echonet/#/site/CIS/${view}?:iid=${iid}&:embed=y&:toolbar=no`);
+                setResolving(false);
+                return;
+            }
+
+            // 3. Resolve from pending metadata (search click)
+            const pendingMeta = sessionStorage.getItem('dashboard_pending_meta');
+            const pendingTitle = sessionStorage.getItem('dashboard_pending_title') || title;
+            sessionStorage.removeItem('dashboard_pending_meta');
+            sessionStorage.removeItem('dashboard_pending_title');
+
+            if (pendingMeta) {
+                try {
+                    const m = JSON.parse(pendingMeta);
+
+                    // If metadata has url_with_repo, use it
+                    if (m.url_with_repo) {
+                        const embed = m.url_with_repo.includes('?')
+                            ? `${m.url_with_repo}&:embed=y&:toolbar=no`
+                            : `${m.url_with_repo}?:embed=y&:toolbar=no`;
+                        setTableauUrl(embed);
+                        setResolving(false);
+                        return;
+                    }
+
+                    // If metadata has enough to build URL directly
+                    if (m.repository_url && m.workbook_repo_url) {
+                        const repoUrlParts = (m.repository_url || '').split('/');
+                        const viewName = repoUrlParts[repoUrlParts.length - 1] || m.view_name || pendingTitle;
+                        const siteNamespace = (m.site_url_namespace || m.site_name || 'CIS').toLowerCase();
+                        const builtUrl = `https://tableau.cib.echonet/#/site/${siteNamespace}/views/${m.workbook_repo_url}/${viewName}?:iid=${m.index || 1}&:embed=y&:toolbar=no`;
+                        setTableauUrl(builtUrl);
+                        setResolving(false);
+                        return;
+                    }
+                } catch (e) {}
+            }
+
+            // 4. Try cached permitted views
+            try {
+                const cacheExpiry = sessionStorage.getItem('insights_cache_expiry');
+                const cacheData = sessionStorage.getItem('insights_page_cache');
+                if (cacheExpiry && Date.now() < parseInt(cacheExpiry) && cacheData) {
+                    const cached = JSON.parse(cacheData);
+                    const allCards = [...(cached.recommended || []), ...(cached.permissioned || [])];
+                    const cleanTitle = (pendingTitle || title).toLowerCase();
+                    const match = allCards.find((c: any) => {
+                        const cName = (c.customized_name || '').toLowerCase();
+                        const vName = (c.view_name || '').toLowerCase();
+                        const wName = (c.workbook_name || '').toLowerCase();
+                        return cName === cleanTitle
+                            || vName === cleanTitle
+                            || wName === cleanTitle
+                            || cleanTitle.includes(vName)
+                            || vName.includes(cleanTitle);
+                    });
+
+                    if (match && (match.url_attempt_2_repo || match.url_attempt_1_url_id)) {
+                        const url = match.url_attempt_2_repo || match.url_attempt_1_url_id;
+                        const embed = url.includes('?')
+                            ? `${url}&:embed=y&:toolbar=no`
+                            : `${url}?:embed=y&:toolbar=no`;
+                        setTableauUrl(embed);
+                        setResolving(false);
+                        return;
+                    }
+                }
+            } catch (e) {}
+
+            // 5. Last resort: call permitted views API
+            try {
+                const { authApi } = await import('@/lib/api');
+                const { getPermittedViews } = await import('@/lib/api/tableauApi');
+                const userRes = await authApi.getCurrentUser();
+                const oidcSub = (userRes as any)?.data?.oidc_sub || (userRes as any)?.oidc_sub;
+
+                if (oidcSub) {
+                    const permittedData = await getPermittedViews(oidcSub);
+                    if (permittedData.success && permittedData.views) {
+                        const cleanTitle = (pendingTitle || title).toLowerCase();
+                        const match = permittedData.views.find((v: any) => {
+                            const vName = (v.name || '').toLowerCase();
+                            const cvName = (v.customized_name || '').toLowerCase();
+                            const wName = (v.workbook_name || '').toLowerCase();
+                            return vName === cleanTitle
+                                || cvName === cleanTitle
+                                || wName === cleanTitle
+                                || cleanTitle.includes(vName)
+                                || vName.includes(cleanTitle);
+                        });
+
+                        if (match) {
+                            const v: any = match;
+                            const repoUrlParts = (v.repository_url || '').split('/');
+                            const viewName = repoUrlParts[repoUrlParts.length - 1] || v.name;
+                            const siteNamespace = (v.site_url_namespace || 'CIS').toLowerCase();
+                            const builtUrl = `https://tableau.cib.echonet/#/site/${siteNamespace}/views/${v.workbook_repo_url}/${viewName}?:iid=${v.index || 1}&:embed=y&:toolbar=no`;
+                            setTableauUrl(builtUrl);
+                            setResolving(false);
+                            return;
+                        }
+                    }
+                }
+            } catch (e) {}
+
+            // Nothing worked
+            setResolving(false);
+        }
+
+        resolveUrl();
+    }, [title, view, iid]);
+
+    if (!resolving && !tableauUrl) {
+        return (
+            <div className="home-page dashboard-page">
+                <Header title={title} />
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, gap: '12px', color: '#6b7280' }}>
+                    <span style={{ fontSize: '14px', fontWeight: 500 }}>Dashboard not found</span>
+                    <button
+                        onClick={() => router.push(backTo)}
+                        style={{ padding: '8px 20px', background: '#047857', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}
+                    >
+                        Go Back
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="home-page dashboard-page">
+            <Header title={title} />
+            <DashboardView
+                url={tableauUrl || ''}
+                title={title}
+                onBack={() => {
+                    sessionStorage.removeItem('dashboard_direct_url');
+                    router.push(backTo);
+                }}
+            />
+        </div>
+    );
+}
