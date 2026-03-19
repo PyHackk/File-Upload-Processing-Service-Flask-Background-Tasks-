@@ -1,0 +1,67 @@
+const handleSelect = useCallback(async (item: SearchResultItem) => {
+    setDropdownVisible(false);
+    setSearchQuery('');
+
+    // Dashboards and workbooks go straight to /dashboard page
+    if (item.doc_type === 'dashboard' || item.doc_type === 'workbook') {
+        const title = (item.title || '').replace(/<[^>]*>/g, '');
+        const m = item.metadata || {};
+
+        // Workbooks with url_with_repo go direct
+        if (item.doc_type === 'workbook' && m.url_with_repo) {
+            sessionStorage.setItem('dashboard_direct_url', m.url_with_repo);
+            window.location.href = `/dashboard?title=${encodeURIComponent(title)}&from=${encodeURIComponent(window.location.pathname)}`;
+            return;
+        }
+
+        // Dashboards and workbooks without url: resolve via permitted views
+        try {
+            const { authApi } = await import('@/lib/api');
+            const { getPermittedViews } = await import('@/lib/api/tableauApi');
+            const userRes = await authApi.getCurrentUser();
+            const oidcSub = (userRes as any)?.data?.oidc_sub || (userRes as any)?.oidc_sub;
+
+            if (oidcSub) {
+                const permittedData = await getPermittedViews(oidcSub);
+                if (permittedData.success && permittedData.views) {
+                    const cleanTitle = title.toLowerCase();
+                    const match = permittedData.views.find((v: any) => {
+                        const vName = (v.name || '').toLowerCase();
+                        const cvName = (v.customized_name || '').toLowerCase();
+                        const wName = (v.workbook_name || '').toLowerCase();
+                        return vName === cleanTitle
+                            || cvName === cleanTitle
+                            || wName === cleanTitle
+                            || cleanTitle.includes(vName)
+                            || vName.includes(cleanTitle);
+                    });
+
+                    if (match) {
+                        const v: any = match;
+                        const repoUrlParts = (v.repository_url || '').split('/');
+                        const viewName = repoUrlParts[repoUrlParts.length - 1] || v.name;
+                        const siteNamespace = (v.site_url_namespace || 'CIS').toLowerCase();
+                        const builtUrl = `https://tableau.cib.echonet/#/site/${siteNamespace}/views/${v.workbook_repo_url}/${viewName}?:iid=${v.index || 1}`;
+                        sessionStorage.setItem('dashboard_direct_url', builtUrl);
+                        window.location.href = `/dashboard?title=${encodeURIComponent(title)}&from=${encodeURIComponent(window.location.pathname)}`;
+                        return;
+                    }
+                }
+            }
+        } catch (e) {}
+
+        // Fallback: still navigate, let dashboard page handle it
+        if (m.url_with_repo) {
+            sessionStorage.setItem('dashboard_direct_url', m.url_with_repo);
+        }
+        window.location.href = `/dashboard?title=${encodeURIComponent(title)}&from=${encodeURIComponent(window.location.pathname)}`;
+        return;
+    }
+
+    // Everything else (clients, meetings, pages) still opens the modal
+    setSelectedItem(item);
+}, []);
+
+
+
+
