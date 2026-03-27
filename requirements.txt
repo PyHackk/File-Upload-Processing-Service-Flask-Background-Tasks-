@@ -4,3 +4,44 @@ Werkzeug==3.0.1
 
 
 
+export const getRecommendedViews = async (oidcSub: string, limit: number = 10): Promise<PermittedViewsResponse> => {
+    try {
+        if (!oidcSub) {
+            return {
+                success: false,
+                error: 'User not authenticated',
+                views: [],
+                total_count: 0,
+                sites_scanned: 0,
+            };
+        }
+
+        const csrfToken = getCsrfToken();
+
+        const response = await fetch(`${API_BASE_URL}/api/tableau/recommended/`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrfToken,
+            },
+            body: JSON.stringify({ oidc_sub: oidcSub, limit }),
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+        return data;
+    } catch (error: any) {
+        console.error('Error fetching recommended views:', error);
+        return {
+            success: false,
+            error: error.message || 'Failed to fetch recommended views',
+            views: [],
+            total_count: 0,
+            sites_scanned: 0,
+        };
+    }
+};
