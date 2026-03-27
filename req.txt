@@ -1,106 +1,344 @@
-@staticmethod
-def get_recommended_views(oidc_sub: str, limit: int = 10) -> Dict:
-    """
-    Get top N recommended views by popularity (total views across ALL users).
-    Uses _views_stats to count accesses, filtered by user's permissions.
-    """
-    # Step 1: Get user's permitted views
-    result = PermissionService.get_all_views_flat(oidc_sub)
-    
-    if not result['success']:
-        return result
-    
-    views = result.get('views', [])
-    if not views:
-        return {
-            'success': True,
-            'views': [],
-            'total_available': 0,
-            'limit': limit,
+// src/lib/api/tableauApi.ts
+// Tableau & Insights API
+
+import { apiClient, API_BASE_URL, getCsrfToken } from '@/lib/api';
+
+// ============================================
+// INTERFACES
+// ============================================
+export interface InsightCard {
+    id: number;
+    customized_name: string;
+    site_name: string;
+    url_attempt_1_url_id: string;
+    url_attempt_2_repo: string;
+    url_attempt_2_simple: string;
+    url_id: string;
+    view_index: number;
+    view_name: string;
+    view_repository_url: string;
+    workbook_name: string;
+    workbook_repo_url: string;
+    last_accessed: string;
+    is_public: boolean;
+    view_count: number;
+    owner: string;
+}
+
+export interface PinnedCard {
+    card_id: number;
+    card_url: string;
+    pinned_at: string;
+}
+
+export interface PinCardRequest {
+    card_id: number;
+    card_url: string;
+}
+
+export interface PinCardResponse {
+    success: boolean;
+    message?: string;
+    data?: PinnedCard[];
+    error?: string;
+}
+
+export interface PermittedViewsResponse {
+    success: boolean;
+    error?: string;
+    user?: {
+        id: number;
+        name: string;
+        email: string;
+        friendly_name: string;
+    };
+    views: InsightCard[];
+    total_count: number;
+    sites_scanned: number;
+}
+
+// ============================================
+// TABLEAU API CLASS
+// ============================================
+export class TableauAPI {
+    private static readonly ENDPOINTS = {
+        EXPLORE: '/api/tableau/insights/explore/',
+        CATEGORIES: '/api/tableau/insights/categories/',
+        WORKBOOK_DASHBOARDS: '/api/tableau/insights/workbook_dashboards/',
+        RECENT: '/api/tableau/insights/recent/',
+        POPULAR: '/api/tableau/insights/popular/',
+        STATS: '/api/tableau/insights/stats/',
+        SEARCH: '/api/tableau/insights/search/',
+    };
+
+    static async explore(search: string = '', limit: number = 100): Promise<any> {
+        try {
+            const response = await apiClient.get(
+                this.ENDPOINTS.EXPLORE,
+                { params: { search, limit } }
+            );
+            return response.data;
+        } catch (error: any) {
+            console.error('Explore API ERROR : ', error.response?.data || error.message);
+            throw error;
         }
-    
-    # Step 2: Extract permitted view IDs
-    permitted_view_ids = [v['id'] for v in views]
-    
-    # Step 3: Query _views_stats for total views across ALL users
-    # Only for views this user has permission to see
-    with connections[DB].cursor() as cursor:
-        placeholders = ','.join(['%s'] * len(permitted_view_ids))
-        cursor.execute(f"""
-            SELECT 
-                vs.views_id,
-                SUM(vs.nviews) as total_views,
-                COUNT(DISTINCT vs.users_id) as unique_users,
-                MAX(vs.last_view_time) as last_viewed
-            FROM _views_stats vs
-            WHERE vs.views_id IN ({placeholders})
-            GROUP BY vs.views_id
-            ORDER BY total_views DESC
-            LIMIT %s
-        """, [*permitted_view_ids, limit])
-        
-        columns = [desc[0] for desc in cursor.description]
-        stats_rows = cursor.fetchall()
-        stats = {row[0]: dict(zip(columns, row)) for row in stats_rows}
-    
-    # Step 4: Merge stats with view details
-    recommended = []
-    for view in views:
-        view_id = view['id']
-        if view_id in stats:
-            view['total_views'] = stats[view_id]['total_views']
-            view['unique_users'] = stats[view_id]['unique_users']
-            view['last_viewed'] = str(stats[view_id]['last_viewed']) if stats[view_id]['last_viewed'] else None
-            recommended.append(view)
-    
-    # Sort by total_views descending
-    recommended.sort(key=lambda v: v.get('total_views', 0) or 0, reverse=True)
-    recommended = recommended[:limit]
-    
-    return {
-        'success': True,
-        'views': recommended,
-        'total_available': len(views),
-        'limit': limit,
     }
 
+    static async getCategories(): Promise<any> {
+        try {
+            const response = await apiClient.get(this.ENDPOINTS.CATEGORIES);
+            return response.data;
+        } catch (error: any) {
+            console.error('Category API ERROR : ', error.response?.data || error.message);
+            throw error;
+        }
+    }
 
+    static async getWorkbookDashboards(WorkbookId: number): Promise<any> {
+        try {
+            const response = await apiClient.get(
+                this.ENDPOINTS.WORKBOOK_DASHBOARDS,
+                { params: { workbook_id: WorkbookId } }
+            );
+            return response.data;
+        } catch (error: any) {
+            console.error('Workbook API ERROR : ', error.response?.data || error.message);
+            throw error;
+        }
+    }
 
+    static async getRecent(limit: number = 10): Promise<any> {
+        try {
+            const response = await apiClient.get(
+                this.ENDPOINTS.RECENT,
+                { params: { limit } }
+            );
+            return response.data;
+        } catch (error: any) {
+            console.error('Recent API ERROR : ', error.response?.data || error.message);
+            throw error;
+        }
+    }
 
+    static async getPopular(limit: number = 10): Promise<any> {
+        try {
+            const response = await apiClient.get(
+                this.ENDPOINTS.POPULAR,
+                { params: { limit } }
+            );
+            return response.data;
+        } catch (error: any) {
+            console.error('Popular API ERROR : ', error.response?.data || error.message);
+            throw error;
+        }
+    }
 
-class RecommendedViewsView(APIView):
-    """POST /api/permissions/recommended/ => Top N views by popularity"""
-    
-    def post(self, request):
-        oidc_sub = request.data.get('oidc_sub')
-        
-        if not oidc_sub:
-            return Response(
-                {'success': False, 'error': 'oidc_sub is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        limit = request.data.get('limit', 10)
-        try:
-            limit = int(limit)
-            limit = max(1, min(limit, 50))
-        except (ValueError, TypeError):
-            limit = 10
-        
-        result = PermissionService.get_recommended_views(oidc_sub, limit=limit)
-        
-        if not result['success']:
-            return Response(result, status=status.HTTP_404_NOT_FOUND)
-        
-        return Response(result)
+    static async getStats(): Promise<any> {
+        try {
+            const response = await apiClient.get(this.ENDPOINTS.STATS);
+            return response.data;
+        } catch (error: any) {
+            console.error('Stats API ERROR : ', error.response?.data || error.message);
+            throw error;
+        }
+    }
 
+    static async search(
+        query: string = '',
+        workbook: string = '',
+        project: string = '',
+        limit: number = 50
+    ): Promise<any> {
+        try {
+            const response = await apiClient.get(
+                this.ENDPOINTS.SEARCH,
+                { params: { q: query, workbook, project, limit } }
+            );
+            return response.data;
+        } catch (error: any) {
+            console.error('Search API ERROR : ', error.response?.data || error.message);
+            throw error;
+        }
+    }
+}
 
+// ============================================
+// PERMITTED VIEWS
+// ============================================
+export const getPermittedViews = async (oidcSub: string): Promise<PermittedViewsResponse> => {
+    try {
+        if (!oidcSub) {
+            console.error('No oidc_sub provided');
+            return {
+                success: false,
+                error: 'User not authenticated - oidc_sub missing',
+                views: [],
+                total_count: 0,
+                sites_scanned: 0,
+            };
+        }
 
+        const csrfToken = getCsrfToken();
 
-from permissions.views import (
-    # ... existing imports ...
-    RecommendedViewsView,
-)
+        const response = await fetch(`${API_BASE_URL}/api/tableau/permitted-views/`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrfToken,
+            },
+            body: JSON.stringify({ oidc_sub: oidcSub }),
+        });
 
-# Add this inside urlpatterns:
-path('recommended/', RecommendedViewsView.as_view(), name='recommended-views'),
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+        return data;
+    } catch (error: any) {
+        console.error('Error fetching permitted views:', error);
+        return {
+            success: false,
+            error: error.message || 'Failed to fetch permitted views',
+            views: [],
+            total_count: 0,
+            sites_scanned: 0,
+        };
+    }
+};
+
+export const getPermittedDashboards = async (): Promise<PermittedViewsResponse> => {
+    try {
+        const oidcSub = localStorage.getItem('oidc_sub');
+        if (!oidcSub) {
+            console.error('No oidc_sub found in localStorage');
+            return {
+                success: false,
+                error: 'User not authenticated - oidc_sub missing',
+                views: [],
+                total_count: 0,
+                sites_scanned: 0,
+            };
+        }
+
+        const response = await fetch(`${API_BASE_URL}/api/dashboards/`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ oidc_sub: oidcSub }),
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+        return data;
+    } catch (error: any) {
+        console.error('Error fetching permitted dashboards:', error);
+        return {
+            success: false,
+            error: error.message || 'Failed to fetch permitted dashboards',
+            views: [],
+            total_count: 0,
+            sites_scanned: 0,
+        };
+    }
+};
+
+// ============================================
+// RECOMMENDED VIEWS
+// ============================================
+export const getRecommendedViews = async (limit: number = 10): Promise<PermittedViewsResponse> => {
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/tableau/recommended/?limit=${limit}`, {
+            method: 'GET',
+            credentials: 'include',
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+        return data;
+    } catch (error: any) {
+        console.error('Error fetching recommended views:', error);
+        return {
+            success: false,
+            error: error.message || 'Failed to fetch recommended views',
+            views: [],
+            total_count: 0,
+            sites_scanned: 0,
+        };
+    }
+};
+
+// ============================================
+// PINNED CARDS
+// ============================================
+export const getPinnedCards = async (): Promise<PinCardResponse> => {
+    try {
+        const response = await fetch('/api/pinned-cards/', {
+            method: 'GET',
+            credentials: 'include',
+        });
+        return await response.json();
+    } catch (error: any) {
+        console.error('Error fetching pinned cards:', error);
+        throw error;
+    }
+};
+
+export const pinCard = async (card: InsightCard): Promise<PinCardResponse> => {
+    try {
+        const response = await fetch('/api/pinned-cards/pin/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+                card_id: card.id,
+                customized_name: card.customized_name || '',
+                url_id: card.url_id || '',
+                view_name: card.view_name,
+                view_repository_url: card.view_repository_url || '',
+                view_index: card.view_index || 0,
+                workbook_name: card.workbook_name,
+                workbook_repo_url: card.workbook_repo_url || '',
+                site_name: card.site_name || '',
+                last_accessed: card.last_accessed || '',
+                is_public: card.is_public || false,
+                url_attempt_1_url_id: card.url_attempt_1_url_id || '',
+                url_attempt_2_repo: card.url_attempt_2_repo,
+            }),
+        });
+        return await response.json();
+    } catch (error: any) {
+        console.error('Error pinning card:', error);
+        if (error.response?.status === 400) {
+            throw new Error('Card is already pinned');
+        }
+        throw error;
+    }
+};
+
+export const unpinCard = async (cardId: number): Promise<PinCardResponse> => {
+    try {
+        const response = await fetch(`/api/pinned-cards/unpin/${cardId}/`, {
+            method: 'DELETE',
+            credentials: 'include',
+        });
+        return await response.json();
+    } catch (error: any) {
+        console.error('Error unpinning card:', error);
+        if (error.response?.status === 404) {
+            throw new Error('Card is not pinned');
+        }
+        throw error;
+    }
+};
+
+export default TableauAPI;
