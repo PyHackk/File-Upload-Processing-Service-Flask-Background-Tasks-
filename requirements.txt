@@ -5,7 +5,7 @@ Werkzeug==3.0.1
 
 
 try {
-    const recData = await getRecommendedViews(currentUser.oidc_sub, 10);
+    const recData = await getRecommendedViews(currentUser?.oidc_sub || '', 10);
     if (recData.success && recData.views && recData.views.length > 0) {
         const recViewIds = recData.views.map((v: any) => v.id);
         const recCards = recViewIds
@@ -36,6 +36,3 @@ setAllPermissionedCards([...allCards].sort(() => Math.random() - 0.5).slice(0, 5
 cachedPermissioned = [...allCards].sort(() => Math.random() - 0.5);
 setRecommendedPreview(cachedRecommended.slice(0, 10));
 setPermissionedPreview(allCards.slice(0, 10));
-
-
-       
