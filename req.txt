@@ -1,42 +1,106 @@
-let permittedGroup: SearchResultGroup | null = null;
-try {
-    const cacheExpiry = sessionStorage.getItem('insights_cache_expiry');
-    const cacheData = sessionStorage.getItem('insights_page_cache');
-    if (cacheExpiry && Date.now() < parseInt(cacheExpiry) && cacheData) {
-        const cached = JSON.parse(cacheData);
-        const allCards = [...(cached.recommended || []), ...(cached.permissioned || [])];
-        const q = value.toLowerCase();
-        const matched = allCards.filter((c: any) => {
-            const name = (c.customized_name || '').toLowerCase();
-            const vName = (c.view_name || '').toLowerCase();
-            const wName = (c.workbook_name || '').toLowerCase();
-            return name.includes(q) || vName.includes(q) || wName.includes(q);
-        });
-
-        if (matched.length > 0) {
-            permittedGroup = {
-                category: 'Dashboards',
-                items: matched.slice(0, 10).map((c: any) => ({
-                    id: c.id?.toString() || Math.random().toString(),
-                    score: 200,
-                    doc_type: 'dashboard',
-                    title: c.customized_name || c.view_name || '',
-                    subtitle: `${c.workbook_name || ''} — ${c.site_name || 'CIS'}`,
-                    category: 'Dashboards',
-                    route: '',
-                    url: '',
-                    metadata: {
-                        view_name: c.view_name,
-                        workbook_name: c.workbook_name,
-                        site_name: c.site_name,
-                        repository_url: c.url_id,
-                        workbook_repo_url: c.workbook_repo_url,
-                        site_url_namespace: c.site_name,
-                        index: c.view_index,
-                        url_with_repo: c.url_attempt_2_repo,
-                    }
-                }))
-            };
+@staticmethod
+def get_recommended_views(oidc_sub: str, limit: int = 10) -> Dict:
+    """
+    Get top N recommended views by popularity (total views across ALL users).
+    Uses _views_stats to count accesses, filtered by user's permissions.
+    """
+    # Step 1: Get user's permitted views
+    result = PermissionService.get_all_views_flat(oidc_sub)
+    
+    if not result['success']:
+        return result
+    
+    views = result.get('views', [])
+    if not views:
+        return {
+            'success': True,
+            'views': [],
+            'total_available': 0,
+            'limit': limit,
         }
+    
+    # Step 2: Extract permitted view IDs
+    permitted_view_ids = [v['id'] for v in views]
+    
+    # Step 3: Query _views_stats for total views across ALL users
+    # Only for views this user has permission to see
+    with connections[DB].cursor() as cursor:
+        placeholders = ','.join(['%s'] * len(permitted_view_ids))
+        cursor.execute(f"""
+            SELECT 
+                vs.views_id,
+                SUM(vs.nviews) as total_views,
+                COUNT(DISTINCT vs.users_id) as unique_users,
+                MAX(vs.last_view_time) as last_viewed
+            FROM _views_stats vs
+            WHERE vs.views_id IN ({placeholders})
+            GROUP BY vs.views_id
+            ORDER BY total_views DESC
+            LIMIT %s
+        """, [*permitted_view_ids, limit])
+        
+        columns = [desc[0] for desc in cursor.description]
+        stats_rows = cursor.fetchall()
+        stats = {row[0]: dict(zip(columns, row)) for row in stats_rows}
+    
+    # Step 4: Merge stats with view details
+    recommended = []
+    for view in views:
+        view_id = view['id']
+        if view_id in stats:
+            view['total_views'] = stats[view_id]['total_views']
+            view['unique_users'] = stats[view_id]['unique_users']
+            view['last_viewed'] = str(stats[view_id]['last_viewed']) if stats[view_id]['last_viewed'] else None
+            recommended.append(view)
+    
+    # Sort by total_views descending
+    recommended.sort(key=lambda v: v.get('total_views', 0) or 0, reverse=True)
+    recommended = recommended[:limit]
+    
+    return {
+        'success': True,
+        'views': recommended,
+        'total_available': len(views),
+        'limit': limit,
     }
-} catch (e) {}
+
+
+
+
+
+class RecommendedViewsView(APIView):
+    """POST /api/permissions/recommended/ => Top N views by popularity"""
+    
+    def post(self, request):
+        oidc_sub = request.data.get('oidc_sub')
+        
+        if not oidc_sub:
+            return Response(
+                {'success': False, 'error': 'oidc_sub is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        limit = request.data.get('limit', 10)
+        try:
+            limit = int(limit)
+            limit = max(1, min(limit, 50))
+        except (ValueError, TypeError):
+            limit = 10
+        
+        result = PermissionService.get_recommended_views(oidc_sub, limit=limit)
+        
+        if not result['success']:
+            return Response(result, status=status.HTTP_404_NOT_FOUND)
+        
+        return Response(result)
+
+
+
+
+from permissions.views import (
+    # ... existing imports ...
+    RecommendedViewsView,
+)
+
+# Add this inside urlpatterns:
+path('recommended/', RecommendedViewsView.as_view(), name='recommended-views'),
