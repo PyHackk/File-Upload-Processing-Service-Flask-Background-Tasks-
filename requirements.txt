@@ -4,35 +4,4 @@ Werkzeug==3.0.1
 
 
 
-try {
-    const recData = await getRecommendedViews(currentUser?.oidc_sub || '', 10);
-    if (recData.success && recData.views && recData.views.length > 0) {
-        const recViewIds = recData.views.map((v: any) => v.id);
-        const recCards = recViewIds
-            .map((id: number) => allCards.find(card => card.id === id))
-            .filter(Boolean) as InsightCard[];
-        
-        if (recCards.length > 0) {
-            setAllRecommendedCards(recCards);
-            cachedRecommended = recCards;
-        } else {
-            const sortedByViews = [...allCards].sort((a, b) => (b.view_count || 0) - (a.view_count || 0));
-            setAllRecommendedCards(sortedByViews.slice(0, 10));
-            cachedRecommended = sortedByViews.slice(0, 10);
-        }
-    } else {
-        const sortedByViews = [...allCards].sort((a, b) => (b.view_count || 0) - (a.view_count || 0));
-        setAllRecommendedCards(sortedByViews.slice(0, 10));
-        cachedRecommended = sortedByViews.slice(0, 10);
-    }
-} catch (e) {
-    console.error('Error fetching recommended:', e);
-    const sortedByViews = [...allCards].sort((a, b) => (b.view_count || 0) - (a.view_count || 0));
-    setAllRecommendedCards(sortedByViews.slice(0, 10));
-    cachedRecommended = sortedByViews.slice(0, 10);
-}
 
-setAllPermissionedCards([...allCards].sort(() => Math.random() - 0.5).slice(0, 50));
-cachedPermissioned = [...allCards].sort(() => Math.random() - 0.5);
-setRecommendedPreview(cachedRecommended.slice(0, 10));
-setPermissionedPreview(allCards.slice(0, 10));
